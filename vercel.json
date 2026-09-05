@@ -1,3 +1,18 @@
 {
-  "framework": "nextjs"
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 60,
+      "includeFiles": ["api/assets/policy_model.onnx"]
+    },
+    "api/health.py": {
+      "maxDuration": 60,
+      "includeFiles": ["api/assets/policy_model.onnx"]
+    },
+    "api/analyze.py": {
+      "maxDuration": 60,
+      "includeFiles": ["api/assets/policy_model.onnx"]
+    }
+  }
 }

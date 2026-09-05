@@ -30,6 +30,7 @@ ENV/
 
 # IDEs
 .pytest_cache/
+.scapy-cache/
 .coverage
 htmlcov/
 .vscode/
