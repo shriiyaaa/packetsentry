@@ -14,7 +14,6 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
 lib64/
 parts/
 sdist/
@@ -67,3 +66,9 @@ config.local
 
 # Qwen specific files
 QWEN.md
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*

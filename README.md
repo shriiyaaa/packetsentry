@@ -1,238 +1,131 @@
-# 🤖 Packet Sniffer RL: Reinforcement Learning-Based Network Intrusion Detection System
+# PacketSentry
 
-## Executive Summary
+**AI-assisted network capture triage using a prototype behavioral model.**
 
-The Packet Sniffer RL project presents an innovative approach to network security monitoring by combining traditional packet capture techniques with reinforcement learning methodologies. This system addresses the critical challenge of real-time malicious activity detection in network traffic, offering a more adaptive and intelligent alternative to conventional signature-based intrusion detection systems.
+PacketSentry is a small full-stack portfolio application that turns a safe, bounded `.pcap` upload into readable protocol context, modeled behavioral events, and a prototype risk signal. It is an experimental security/ML project—not a production intrusion-detection system and not a calibrated probability engine.
 
-Our solution transforms raw network packets into behavioral event sequences, which are then processed by a trained neural network to predict the likelihood of malicious activity. This approach enables the system to detect previously unseen attack patterns and adapt to evolving threat landscapes.
+> Screenshot: after deployment, add a dashboard screenshot here (for example, `docs/packetsentry-dashboard.png`). The included one-click sample is the fastest way to reproduce the view.
 
-![Demo Screenshot](img/demo1.png)
+## Try it locally
 
-## Technical Architecture
+The canonical integrated workflow is Vercel CLI, because the browser and FastAPI function share the same origin:
 
-The system implements a distributed architecture with three primary components:
+```bash
+npm install
+python -m venv .venv
+# Windows: .venv\Scripts\Activate.ps1
+# macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+python tools/generate_demo_pcap.py
+vercel dev
+```
+
+Open `http://localhost:3000`, then click **Try sample capture**. The sample is a deterministic synthetic capture and goes through the exact same `POST /api/analyze` path as a user-selected file.
+
+For frontend-only iteration, `npm run dev` starts Next.js, but the analysis action requires the integrated Vercel function route. Backend tests use FastAPI directly and do not require a running server.
+
+If you do not have Vercel CLI authentication available locally, run the two development processes below; Next.js forwards `/api/*` only in development:
+
+```bash
+python -m uvicorn api.index:app --reload --port 8000
+npm run dev
+```
+
+## What is included
+
+- Next.js App Router + TypeScript + Tailwind CSS frontend.
+- FastAPI ASGI app exposed from `api/index.py` for Vercel Python Functions.
+- Scapy PCAP parsing entirely in memory.
+- ONNX Runtime inference against the committed `agents/policy_model.onnx` copied to `api/assets/policy_model.onnx`.
+- Deterministic synthetic demo generator at `tools/generate_demo_pcap.py`.
+- Bounded score timeline, modeled-event table, protocol distribution, and final-window sensitivity explanation.
+- No authentication, database, persistent uploads, packet replay, external calls, or required secrets.
+
+## Architecture
 
 ```mermaid
-graph TB
-    subgraph "Client Layer"
-        A[Network Sniffer<br/>Scapy-based Capture]
-    end
-    
-    subgraph "Server Layer" 
-        B[Inference Server<br/>FastAPI Backend]
-        C[RL Model<br/>PyTorch Neural Network]
-    end
-    
-    subgraph "UI Layer"
-        D[Visualization Dashboard<br/>Streamlit Interface]
-    end
-    
-    A -->|HTTP/JSON| B
-    B -->|Model Inference| C
-    B -->|WebSocket| D
-    C -->|Classification Results| B
-    D -.->|Control Signals| B
-    
-    style A fill:#e1f5fe
-    style B fill:#f3e5f5
-    style C fill:#e8f5e8
-    style D fill:#fff3e0
+flowchart LR
+    B[Browser\nNext.js + TypeScript] -->|same-origin multipart upload| A[api/index.py\nFastAPI]
+    A --> P[Scapy\nstreaming PCAP parse]
+    P --> F[10-event window\n8-event one-hot vocabulary]
+    F --> M[ONNX Runtime\npolicy_model.onnx]
+    M --> R[Bounded JSON\nno raw payloads]
+    R --> B
 ```
 
-- **Network Sniffer (Client)**: Captures live network traffic using Scapy, preprocesses packets into behavioral events, and forwards them to the inference server
-- **Inference Server (FastAPI)**: Processes incoming events through the trained RL model, maintains session state with sliding window feature extraction, and provides real-time classification
-- **Visualization Dashboard (Streamlit)**: Provides real-time monitoring, visualization of captured packets, and model predictions with intuitive UI controls
+The frontend calls relative URLs (`/api/analyze` and `/api/health`). Vercel serves the Next.js page and Python function from one project. `.python-version` pins the server runtime to Python 3.12.
 
-## Implementation Details
+## API
 
-### Reinforcement Learning Methodology
+### `GET /api/health`
 
-The system employs a policy-gradient reinforcement learning approach where:
+Reports model initialization and the active safety limits:
 
-- **State Space**: A sliding window of the last 10 network events, represented as concatenated one-hot encoded vectors
-- **Action Space**: Binary classification (0: Benign, 1: Malicious)
-- **Reward Function**: +1 for correct classification, -1 for incorrect classification
-- **Policy Network**: A feedforward neural network with two hidden layers (128 and 64 neurons) with ReLU activations followed by a softmax output layer
+```json
+{
+  "status": "ok",
+  "model_loaded": true,
+  "model_runtime": "onnxruntime",
+  "max_upload_bytes": 3000000,
+  "max_packets": 10000
+}
+```
 
-### Feature Engineering
+### `POST /api/analyze`
 
-Network packets are transformed into behavioral events using the following mapping:
-- TCP SYN flags → "open_socket" event
-- TCP FIN flags → "close_socket" event  
-- Raw payload presence → "read_file" event (approximation)
+Accepts a multipart field named `file`. Only `.pcap` is advertised in v1. The response includes scan metadata, threat score and level, protocol counts/percentages, bounded modeled events, a bounded score timeline, and final-window sensitivity hints.
 
-The sliding window mechanism maintains the last 10 events as a fixed-length feature vector of size 80 (10 events × 8 event types), enabling the model to recognize temporal patterns in network behavior.
+Safety limits are enforced in both browser and backend:
 
-### Model Training
+| Limit | Value |
+| --- | ---: |
+| Upload size | 3,000,000 bytes |
+| Packets parsed | 10,000 |
+| Returned modeled events | 250 |
+| Timeline points | 250 |
+| Explanation items | 5 |
 
-The reinforcement learning agent is trained on synthetic behavioral traces containing both benign and malicious patterns. Training involves:
-- Episode-based learning with trajectory sampling from behavioral traces
-- Policy gradient updates using REINFORCE algorithm
-- Continuous evaluation and model checkpointing
+The parser recognizes these legacy mappings: TCP SYN → `open_socket`, TCP FIN → `close_socket`, and Scapy `Raw` payload presence → `read_file`. Protocol, port, and packet-index metadata are safe display fields; raw payload content is never returned or logged.
 
-## Results and Performance
+## Model methodology and limitations
 
-Current model performance metrics:
-- **Overall Accuracy**: 63.17%
-- **Malicious Activity Detection**: 100.00% (no false negatives)
-- **Benign Activity Classification**: 33.90% (high false positive rate)
+The original packet-sniffer project defines eight event types and a ten-event sliding window of concatenated float32 one-hot vectors. The action at index `1` is treated as the prototype risk score, matching the original inference server. Display bands are `LOW < 0.55`, `MEDIUM 0.55–<0.75`, and `HIGH >= 0.75`; these are UI thresholds, not calibrated attack probabilities.
 
-While the model demonstrates excellent capability in identifying malicious activities (critical for security applications), there's room for improvement in reducing false positives for benign traffic. This trade-off reflects the security-first design principle prioritizing threat detection over precision in normal traffic classification.
+There is an important provenance detail: the committed ONNX artifact introspects as a 40-feature model (five event slots), while the canonical legacy runtime window is 80 features (ten slots). PacketSentry preserves the ten-event window for analysis and explanations, then feeds the ONNX Runtime adapter the final compatible model-width slots. The dashboard exposes both widths so this mismatch is visible rather than silently papered over. No retraining or benchmark improvement is claimed.
 
-## Deployment and Usage
+The model was trained on synthetic behavioral traces. The original project reports a known false-positive limitation on benign traffic. PacketSentry should be used for exploratory triage and portfolio demonstration, not as a production IDS verdict, automated blocking mechanism, or forensic conclusion.
 
-### Prerequisites
-- Python 3.8+
-- PyTorch
-- FastAPI
-- Streamlit
-- Scapy
-- uvicorn
+## Tests and release gates
 
-### Installation
 ```bash
-pip install torch gymnasium scapy streamlit fastapi uvicorn requests numpy pandas
+npm run lint
+npm run build
+pytest -q
 ```
 
-### Manual Component Startup
+The test suite covers feature dimensions, SYN/FIN/Raw mappings, real sample parsing, real ONNX inference, numeric score bounds, health, malformed PCAP handling, oversized uploads, bounded output, and the absence of raw payload text in responses. GitHub Actions repeats the Node and Python gates in `.github/workflows/ci.yml`.
 
-For more control over individual components, you can start them separately.
+## Vercel deployment
 
-<details>
-<summary>Linux Instructions</summary>
+1. Import this repository into Vercel with the repository root as the project root.
+2. Keep the framework as Next.js; no environment variables are required for v1.
+3. Deploy and check `/api/health` before trying the homepage sample.
+4. Add the live URL and a real dashboard screenshot to this README after deployment.
 
-> [!WARNING]
-> The packet sniffer requires root privileges to access network interfaces in real-time.
+Do not add a second backend host or a CORS proxy: the deployment relies on Vercel's same-origin Next.js + Python function layout.
 
-1. **Start the Inference Server**:
-   ```bash
-   python -m uvicorn server.inference_server:app --host 0.0.0.0 --port 8000
-   ```
+## Privacy and security behavior
 
-2. **Run the Packet Sniffer** (in another terminal with sudo):
-   ```bash
-   sudo python client/sniffer_forwarder.py --iface [interface_name]
-   ```
+Uploaded bytes are read into memory for one request and are not written to persistent disk. The service does not replay packets, resolve hosts from captures, execute payloads, construct shell commands from user input, or return raw payload data. Errors are converted into safe client messages; logs contain only byte size, packet count, modeled-event count, duration, and error category.
 
-3. **Launch the Dashboard** (in another terminal):
-   ```bash
-   streamlit run ui/dashboard.py
-   ```
+## History and provenance
 
-</details>
+PacketSentry revives the original `shriiyaaa/packet-sniffer` RL packet-sniffer project. The legacy repository contained Scapy capture mapping, a FastAPI event inference server, Streamlit UI, synthetic behavioral traces, and the `agents/policy_model.onnx` asset. This v1 keeps the event vocabulary and ONNX artifact while replacing the live-sniffer/Streamlit presentation with a bounded upload workflow suitable for a zero-configuration Vercel demo. Legacy scripts and checkpoints remain in the repository for provenance; the deployable path is isolated under `api/`, `app/`, `components/`, and `lib/`.
 
-<details>
-<summary>Windows Instructions</summary>
+## Roadmap
 
-> [!WARNING]
-> The packet sniffer requires administrator privileges to access network interfaces in real-time.
-
-1. **Start the Inference Server**:
-   ```cmd
-   python -m uvicorn server.inference_server:app --host 0.0.0.0 --port 8000
-   ```
-
-2. **Run the Packet Sniffer** (in another command prompt as Administrator):
-   ```cmd
-   python client/sniffer_forwarder.py --iface [interface_name]
-   ```
-
-3. **Launch the Dashboard** (in another command prompt):
-   ```cmd
-   streamlit run ui/dashboard.py
-   ```
-
-</details>
-
-### Alternative: Integrated Dashboard (Mock RL Model)
-
-For a simplified setup without the full server infrastructure, use the integrated solution with a simulated RL model:
-```bash
-streamlit run integrated_sniffer_rl_dashboard.py
-```
-
-> [!NOTE]
-> The integrated dashboard uses a mock RL model for demonstration purposes and does not connect to the actual trained model.
-
-### Complete System with main.py (Recommended)
-
-For the complete system with actual RL model inference, use the main.py script:
-
-<details>
-<summary>Linux Instructions</summary>
-
-> [!WARNING]
-> The project requires root privileges to access network interfaces in real-time. The main.py script handles this automatically.
-
-1. **Run the complete system**:
-   ```bash
-   sudo python main.py --interface [interface_name]
-   ```
-
-   This will start:
-   - Inference server on port 2000
-   - Dashboard on port 8501
-   - Packet sniffer on the specified interface
-
-</details>
-
-<details>
-<summary>Windows Instructions</summary>
-
-> [!WARNING]
-> The project requires administrator privileges to access network interfaces in real-time. Run as Administrator.
-
-1. **Run the complete system** (as Administrator):
-   ```cmd
-   python main.py --interface [interface_name]
-   ```
-
-   This will start:
-   - Inference server on port 2000
-   - Dashboard on port 8501
-   - Packet sniffer on the specified interface
-
-</details>
-
-## Future Enhancements
-
-### Technical Improvements
-- **Model Optimization**: Implement attention mechanisms for better interpretability and improved accuracy balance
-- **Feature Expansion**: Incorporate additional network protocol features (ports, protocols, timing patterns)
-- **Federated Learning**: Enable collaborative threat intelligence without sharing sensitive network data
-- **Encrypted Traffic Analysis**: Develop behavioral pattern recognition for encrypted communications
-
-### Architectural Enhancements
-- **Scalability**: Implement distributed processing for high-throughput network environments
-- **Real-time Adaptation**: Enable online learning capabilities for continuous model updates
-- **Threat Intelligence Integration**: Connect with external threat feeds for contextual awareness
-
-### Advanced Analytics
-- **Anomaly Scoring**: Implement confidence intervals and uncertainty quantification
-- **Attack Attribution**: Enhance classification with attack type identification
-- **Risk Assessment**: Integrate business context for risk-based alerting
-
-## Academic and Industry Relevance
-
-### Research Contributions
-This project contributes to the growing field of AI-driven cybersecurity by demonstrating:
-- Practical application of reinforcement learning in network security
-- Behavioral analysis techniques for intrusion detection
-- Real-time processing challenges in security analytics
-
-### Industry Applications
-The system addresses critical needs in:
-- **Enterprise Security Operations Centers (SOCs)**: Automated threat detection reducing analyst workload
-- **Cloud Security**: Scalable monitoring for cloud infrastructure
-- **IoT Security**: Lightweight detection for resource-constrained devices
-- **Compliance Monitoring**: Continuous network behavior analysis for regulatory compliance
-
-### Technical Skills Demonstrated
-- Deep learning model development and deployment
-- Distributed system architecture design
-- Real-time data processing and streaming
-- Network protocol analysis and packet capture
-- Full-stack development (Python backend, interactive UI)
-- MLOps practices (model versioning, evaluation, deployment)
-
-This project represents a sophisticated integration of multiple cutting-edge technologies to address a critical cybersecurity challenge, demonstrating both theoretical understanding and practical implementation capabilities in AI-driven security solutions.
+- Validate and retrain a versioned model with real, carefully labeled traffic before any operational use.
+- Add a documented PCAPNG path only after parser and payload-safety tests exist.
+- Support larger private captures through private object storage and a durable job model.
+- Add richer, independently validated protocol features and calibration metrics.
+- Add authentication and retention controls if scan history becomes a product requirement.
